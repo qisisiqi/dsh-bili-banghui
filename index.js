@@ -592,9 +592,10 @@ export function apply(ctx, config = {}) {
             const t = await fetchThread(cookie, {
               bvid: String(url.searchParams.get('bvid') || ''),
               root: Number(url.searchParams.get('root') || 0),
+              target: Number(url.searchParams.get('target') || 0),
               fresh: Number(url.searchParams.get('fresh') || 0) > 0,
             })
-            return sendJson(res, 200, { ok: true, rows: t.rows, root: t.root, title: t.title })
+            return sendJson(res, 200, { ok: true, rows: t.rows, root: t.root, title: t.title, truncated: !!t.truncated })
           }
           return sendJson(res, 404, { ok: false, error: `unknown ${req.method} ${path}` })
         } catch (e) {

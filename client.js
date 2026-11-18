@@ -577,9 +577,20 @@ window.__ModuleLoader__.load({
       const thread = usePoll(React.useCallback(async () => {
         if (!curKey) return { ok: true, rows: [] }
         const [bvid, root] = curKey.split('|')
-        return apiGet(`/thread?bvid=${encodeURIComponent(bvid)}&root=${encodeURIComponent(root)}&fresh=${ver}`)
-      }, [curKey, ver]), 60000)
-      const rows = Array.isArray(thread.data?.rows) ? thread.data.rows : []
+        const target = Number(cur && cur.source) || 0
+        return apiGet(`/thread?bvid=${encodeURIComponent(bvid)}&root=${encodeURIComponent(root)}&target=${target}&fresh=${ver}`)
+      }, [curKey, ver, cur && cur.source]), 60000)
+      const rowsRaw = Array.isArray(thread.data?.rows) ? thread.data.rows : []
+      // 楼层太长时后端只取最新一段：通知里那条一定补上，保证「我在回他哪句」看得到
+      const rows = (() => {
+        if (!cur) return rowsRaw
+        const src = Number(cur.source) || 0
+        if (!src || rowsRaw.some((r) => Number(r.rpid) === src)) return rowsRaw
+        return [...rowsRaw, {
+          rpid: src, name: cur.name, avatar: cur.avatar, mid: cur.mid,
+          time: cur.time, text: cur.text, target: Number(cur.target) || 0,
+        }]
+      })()
       const warn = list.data?.ok === false ? list.data.error : thread.data?.ok === false ? thread.data.error : ''
 
       // ── 列表：一行 = 一个楼层（参与人用头像堆叠表示） ──
