@@ -1,6 +1,6 @@
 {
   "name": "dsh-bili-banghui",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "private": true,
   "description": "B站帮回：把「回复我的」按人和楼层攒成会话，AI 看对方态度给三条，你点头才发。",
   "type": "module",

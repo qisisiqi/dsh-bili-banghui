@@ -455,7 +455,8 @@ window.__ModuleLoader__.load({
         let timer = null
         const readMs = () => readPoll()
         const tick = async () => {
-          if (!readMs()) return
+          const ms = readMs()
+          if (!ms) return
           try {
             const r = await apiGet('/replies')
             const items = Array.isArray(r?.items) ? r.items : []
@@ -463,7 +464,15 @@ window.__ModuleLoader__.load({
             const last = Number(localStorage.getItem('bd-last-notif') || 0)
             if (!last) { if (maxId) localStorage.setItem('bd-last-notif', String(maxId)); return }
             if (maxId > last) {
-              const fresh = items.filter((x) => Number(x.notifId) > last).sort((a, b) => b.time - a.time)
+              // 只推「真的还没处理」的：已回、不回都跳过；
+              // 太久以前的也不补推（停了一阵再开轮询时，老通知会一股脑算成新的）
+              const now = Date.now()
+              const maxAge = Math.max(ms * 2, 3600000)
+              const fresh = items
+                .filter((x) => Number(x.notifId) > last)
+                .filter((x) => !x.replied && !x.muted)
+                .filter((x) => now - (Number(x.time) || 0) < maxAge)
+                .sort((a, b) => b.time - a.time)
               if (fresh[0]) setToast({ name: fresh[0].name, text: fresh[0].text, n: fresh.length })
             }
             if (maxId) localStorage.setItem('bd-last-notif', String(maxId))
@@ -704,6 +713,10 @@ window.__ModuleLoader__.load({
         if (r.rpid) snap.row.rpid = r.rpid
         setPending((p) => [...p, snap])
         setReplyText('')
+        // 发出去之后候选框就该收起来，不要留在页面上
+        setCands([])
+        setStance('')
+        setDraftErr('')
         toast(r.logged ? '已发出（已记流水）' : '已发出（流水没写成）')
         setTimeout(() => setVer((v) => v + 1), 1200)
         setTimeout(() => setVer((v) => v + 1), 5000)
