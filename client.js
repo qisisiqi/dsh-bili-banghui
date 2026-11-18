@@ -28,6 +28,22 @@ window.__ModuleLoader__.load({
       return POLL_OPTS.some(([ms]) => ms === v) ? v : 0
     }
 
+    // 看过哪几条（打开过就算），轮询不再推这些
+    const readSeen = () => {
+      try {
+        const arr = JSON.parse(localStorage.getItem('bd-seen') || '[]')
+        return new Set(Array.isArray(arr) ? arr.map(Number) : [])
+      } catch { return new Set() }
+    }
+    const markSeen = (notifId) => {
+      const id = Number(notifId) || 0
+      if (!id) return
+      const seen = readSeen()
+      if (seen.has(id)) return
+      seen.add(id)
+      localStorage.setItem('bd-seen', JSON.stringify([...seen].slice(-300)))
+    }
+
     const STYLE = `
       .bd{--bg:var(--dsw-alias-bg-base,#fff);--l1:var(--dsw-alias-bg-layer-1,#f7f8fa);--l2:var(--dsw-alias-bg-layer-2,#fff);--l3:var(--dsw-alias-bg-layer-3,#eef0f3);--bd:var(--dsw-alias-border-l1,#e5e7eb);--tx:var(--dsw-alias-label-primary,#1f2328);--tx2:var(--dsw-alias-label-secondary,#5b6470);--tx3:var(--dsw-alias-label-caption,#8b939e);--acc:#fb7299;
         color:var(--tx);font-size:13px;line-height:1.5}
@@ -468,9 +484,11 @@ window.__ModuleLoader__.load({
               // 太久以前的也不补推（停了一阵再开轮询时，老通知会一股脑算成新的）
               const now = Date.now()
               const maxAge = Math.max(ms * 2, 3600000)
+              const seen = readSeen()
               const fresh = items
                 .filter((x) => Number(x.notifId) > last)
                 .filter((x) => !x.replied && !x.muted)
+                .filter((x) => !seen.has(Number(x.notifId)))
                 .filter((x) => now - (Number(x.time) || 0) < maxAge)
                 .sort((a, b) => b.time - a.time)
               if (fresh[0]) setToast({ name: fresh[0].name, text: fresh[0].text, n: fresh.length })
@@ -566,7 +584,8 @@ window.__ModuleLoader__.load({
         setDrafts((d) => ({ ...d, [curKey]: v }))
       }, [curKey])
       const [lastRefresh, setLastRefresh] = React.useState('')
-              React.useEffect(() => { setCands([]); setReplyErr(''); setDraftErr(''); setStance('') }, [curKey])
+              React.useEffect(() => { setCands([]); setReplyErr(''); setDraftErr(''); setStance(''); setPending((p) => p.filter((x) => x.key === curKey)) }, [curKey])
+      React.useEffect(() => { if (cur && cur.notifId) markSeen(cur.notifId) }, [curKey, cur && cur.notifId])
 
       const doRefresh = async () => {
         const prev = (list.data?.items || [])[0]?.notifId || 0
@@ -658,7 +677,13 @@ window.__ModuleLoader__.load({
         }
       }
       const chainRows = floorRows.filter((r) => inSet.has(r.rpid))
-      const pendingRows = pending.filter((p) => p.key === curKey).map((p) => p.row)
+      // 发出去的乐观行：楼层里已经有了（rpid 或同文同人）就不再重复画一条
+      const floorIds = new Set(floorRows.map((r) => Number(r.rpid)))
+      const pendingRows = pending
+        .filter((p) => p.key === curKey)
+        .map((p) => p.row)
+        .filter((r) => !floorIds.has(Number(r.rpid))
+          && !floorRows.some((f) => f.mid === r.mid && f.text === r.text && Math.abs(Number(f.time) - Number(r.time)) < 180000))
       const shownRows = [...chainRows, ...pendingRows]
       const extraHis = cur ? floorRows.filter((r) => isHis(r) && !inSet.has(r.rpid)) : []
 
@@ -720,7 +745,7 @@ window.__ModuleLoader__.load({
         toast(r.logged ? '已发出（已记流水）' : '已发出（流水没写成）')
         setTimeout(() => setVer((v) => v + 1), 1200)
         setTimeout(() => setVer((v) => v + 1), 5000)
-        setTimeout(() => setPending((p) => p.filter((x) => x !== snap)), 20000)
+        setTimeout(() => setPending((p) => p.filter((x) => x !== snap)), 8000)
         list.refresh()
       }
 
