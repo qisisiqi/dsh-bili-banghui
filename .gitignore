@@ -1,0 +1,7 @@
+node_modules/
+# 个人数据：凭证 / 人设 / 流水 / 样本 / Key / 不回名单 —— 绝不进 git
+data/
+*.log
+*.bak-*
+*.zip
+.DS_Store

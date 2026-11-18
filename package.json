@@ -1,0 +1,41 @@
+{
+  "name": "dsh-bili-banghui",
+  "version": "0.4.0",
+  "private": true,
+  "description": "B站帮回：把「回复我的」按人×楼层聚合，AI 按态度出稿，人审后发出。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/workbench.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "assets/**",
+    "icon.svg",
+    "README.md",
+    "INSTALL.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "engines": {
+    "dsh": ">=44.0.0"
+  }
+}
