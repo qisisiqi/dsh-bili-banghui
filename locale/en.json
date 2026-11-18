@@ -1,1 +1,1 @@
-{ "meta": { "title": "BiliBanghui · Bilibili reply helper", "description": "Groups the replies you received into per-person, per-floor threads, drafts three options based on the other person's tone, and sends only after you confirm. It never posts on its own." } }
+{ "meta": { "title": "BiliBanghui · Bilibili reply helper", "description": "Groups the replies you got by person and thread, suggests three options based on the other person's tone, and sends only after you confirm. Sign-in, persona and API key are set from the avatar menu." } }

@@ -1,8 +1,8 @@
 {
   "name": "dsh-bili-banghui",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
-  "description": "B站帮回：把「回复我的」按人×楼层聚合，AI 按态度出稿，人审后发出。",
+  "description": "B站帮回：把「回复我的」按人和楼层攒成会话，AI 看对方态度给三条，你点头才发。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -34,8 +34,5 @@
         "@deepseek-ai/dsh-client-runtime"
       ]
     }
-  },
-  "engines": {
-    "dsh": ">=44.0.0"
   }
 }
