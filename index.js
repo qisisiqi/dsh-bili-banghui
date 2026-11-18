@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fetchReplyList, fetchThread, fetchMe, fetchAid } from './lib/workbench.js'
+import { personaExcerpt, draftSystem } from './lib/prompt.js'
 
 export const inject = ['webServer']
 
@@ -466,10 +467,8 @@ export function apply(ctx, config = {}) {
               const personaRaw = existsSync(cfg.personaFile)
                 ? readFileSync(cfg.personaFile, 'utf8')
                 : ''
-              // 只取「语言 DNA / 反驳套路 / 话题语气」三段，避免整份档案稀释注意力
-              const pStart = personaRaw.indexOf('## 三、')
-              const pEnd = personaRaw.indexOf('## 六、')
-              const persona = (pStart >= 0 && pEnd > pStart ? personaRaw.slice(pStart, pEnd) : personaRaw).slice(0, 5000)
+              // 三～六（语言/套路/场景/赞同语气）+ 自动归纳 + 九 例句库，见 lib/prompt.js
+              const persona = personaExcerpt(personaRaw)
               const rootText = String(body?.rootText || '')
               const mine = String(body?.mine || '')
               const his = String(body?.his || '')
@@ -477,37 +476,7 @@ export function apply(ctx, config = {}) {
               const single = String(body?.single || '')
               const singleTag = String(body?.tag || '')
 
-              const system = [
-                '你在替一位 B站 用户起草回复。必须完全模仿他（她）的人设和语气。',
-                '',
-                '对方态度已由前一步判定，见用户消息里的「对方态度」。严格按它写，不要自己改判。',
-                '',
-                '固定输出 3 条：',
-                '- A：主选。最像本人、最稳，直接接住他这句话里的具体点。',
-                '- B：变体。换一个角度或力度（更软/更硬/换论据）。',
-                '- C：收尾。最短、最省事的一条；友善时就是更简短的附和或一句梗。',
-                '',
-                '语气规则：',
-                '- 赞同：三条都顺着说/玩梗，禁止辩论和反问。',
-                '- 友善：三条都轻快，接梗或回答。',
-                '- 中立：三条都简短表态，不主动抬杠。',
-                '- 抬杠：A 讲理、B 更硬、C 收尾。',
-                '- 攻击：A 冷处理讲理、B 更硬、C 一句收尾或明显不想聊。',
-                '',
-                '输出格式：只输出一个 JSON 对象，不要解释、不要代码块：',
-                '{"stance":"赞同|友善|中立|抬杠|攻击","candidates":[{"key":"A","tag":"定位·打法","text":"正文"}]}',
-                '规则：',
-                '1. 必须 3 条，key 依次为 A、B、C，不要多也不要少。',
-                '2. text 为纯正文，不含「回复 @某人」，一般不超过 100 个汉字，1–2 个 [表情]。',
-                '3. 赞同/友善时不要用「反问」「归谬」「免战牌」这类打法。',
-                '4. 每条都必须先直接接住他最后一句话，再补一句；不许另起话题。',
-                '5. 口语短句，像微信打字；不要堆连接词（说到底/说白了/换句话说/首先），不要书面腔。',
-                '6. 不骂脏话、不问候家人、不碰政治地域性别、不透露账号、不提 AI。',
-                '7. 不要用「确实」「你说得对」「有道理」开头凑数；除非他在陈述事实、你只是补一句。',
-                '',
-                '这是他的性格与语言习惯档案：',
-                persona,
-              ].join('\n')
+              const system = draftSystem(persona)
 
               const history = Array.isArray(body?.history) ? body.history.slice(-8).map((x) => String(x)) : []
 
