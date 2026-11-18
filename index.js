@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fetchReplyList, fetchThread, fetchMe, fetchAid } from './lib/workbench.js'
-import { personaExcerpt, draftSystem } from './lib/prompt.js'
+import { personaExcerpt, draftSystem, STANCE_RULES } from './lib/prompt.js'
 
 export const inject = ['webServer']
 
@@ -489,16 +489,17 @@ export function apply(ctx, config = {}) {
                   body: JSON.stringify({
                     model: cfg.model,
                     temperature: 0,
-                    max_tokens: 8,
+                    max_tokens: 60,
                     messages: [
-                      { role: 'system', content: '判断这句回复对我的态度，只输出一个词：赞同、友善、中立、抬杠、攻击。反问/质问/否定我的判断=抬杠；带侮辱或嘲讽人格=攻击。' },
+                      { role: 'system', content: STANCE_RULES },
                       { role: 'user', content: `主楼：${rootText}\n我说过：${mine || '（无）'}\n他回我：“${his}”` },
                     ],
                   }),
                 })
                 const cls = await clsResp.json().catch(() => null)
                 const word = String(cls?.choices?.[0]?.message?.content || '').trim()
-                stance = ['赞同', '友善', '中立', '抬杠', '攻击'].find((s) => word.includes(s)) || '中立'
+                // 取第一个出现的标签（后面的理由里可能提到别的态度）
+                stance = (word.match(/赞同|友善|中立|抬杠|攻击/) || [])[0] || '中立'
               } catch { /* 判不出来按中立 */ }
 
               const user = [
