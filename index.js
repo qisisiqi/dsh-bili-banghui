@@ -382,6 +382,54 @@ const effectiveModel = () => {
               models: ['deepseek-chat', 'deepseek-reasoner'],
             })
           }
+          // ── 拉当前 Key 能看到的模型列表（OpenAI 兼容接口一般都有 /models） ──
+          if (path === '/api/bili-banghui/models' && req.method === 'GET') {
+            const apiKey = existsSync(cfg.keyFile) ? readFileSync(cfg.keyFile, 'utf8').trim() : ''
+            if (!apiKey) return sendJson(res, 200, { ok: false, error: '还没填 Key' })
+            const eff = effectiveModel()
+            try {
+              const r = await fetch(`${String(eff.apiBase).replace(/\/$/, '')}/models`, {
+                headers: { authorization: `Bearer ${apiKey}` },
+              })
+              const j = await r.json().catch(() => null)
+              if (!r.ok) return sendJson(res, 200, { ok: false, error: `HTTP ${r.status}：${j?.error?.message || '拿不到模型列表'}` })
+              const ids = (Array.isArray(j?.data) ? j.data : []).map((x) => String(x?.id || '')).filter(Boolean).slice(0, 300)
+              return sendJson(res, 200, { ok: true, models: ids, apiBase: eff.apiBase })
+            } catch (e) {
+              return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) })
+            }
+          }
+          // ── 测试一下 Key + 模型 + 接口能不能通 ──
+          if (path === '/api/bili-banghui/key/test' && req.method === 'POST') {
+            const apiKey = existsSync(cfg.keyFile) ? readFileSync(cfg.keyFile, 'utf8').trim() : ''
+            if (!apiKey) return sendJson(res, 200, { ok: false, error: '还没填 Key' })
+            const eff = effectiveModel()
+            try {
+              const r = await fetch(`${String(eff.apiBase).replace(/\/$/, '')}/chat/completions`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+                body: JSON.stringify({
+                  model: eff.model,
+                  ...withTemp(eff.model, 0),
+                  max_tokens: 8,
+                  messages: [{ role: 'user', content: 'ping' }],
+                }),
+              })
+              const j = await r.json().catch(() => null)
+              if (!r.ok) {
+                return sendJson(res, 200, {
+                  ok: false,
+                  error: `HTTP ${r.status}：${j?.error?.message || j?.message || '接口没返回可读信息'}`,
+                  model: eff.model,
+                  apiBase: eff.apiBase,
+                })
+              }
+              const reply = String(j?.choices?.[0]?.message?.content ?? '').trim()
+              return sendJson(res, 200, { ok: true, model: eff.model, apiBase: eff.apiBase, reply: reply.slice(0, 40) })
+            } catch (e) {
+              return sendJson(res, 200, { ok: false, error: String(e?.message ?? e), model: eff.model, apiBase: eff.apiBase })
+            }
+          }
           if (path === '/api/bili-banghui/key' && req.method === 'POST') {
             const body = await readBody(req)
             if (body?.clear) {
@@ -393,8 +441,9 @@ const effectiveModel = () => {
             const key = String(body?.key || '').trim()
             const model = String(body?.model || '').trim()
             const apiBase = String(body?.apiBase || '').trim()
-            if (key && !/^sk-[A-Za-z0-9]{16,}$/.test(key)) {
-              return sendJson(res, 200, { ok: false, error: '格式不对：应以 sk- 开头，只含字母数字' })
+            // 各家 key 形状不同（阿里云是 sk-ws-…，中间带连字符），只挡空格和明显不是 key 的
+            if (key && !/^[\x21-\x7E]{8,200}$/.test(key)) {
+              return sendJson(res, 200, { ok: false, error: 'Key 里不能有空格或中文，检查一下是不是粘错了' })
             }
             if (model && !/^[A-Za-z0-9._:-]{2,60}$/.test(model)) {
               return sendJson(res, 200, { ok: false, error: '模型名不合法' })

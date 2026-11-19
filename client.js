@@ -497,11 +497,18 @@ window.__ModuleLoader__.load({
       const [apiBase, setApiBase] = React.useState('')
       const [busy, setBusy] = React.useState(false)
       const [askClear, setAskClear] = React.useState(false)
+      const [remoteModels, setRemoteModels] = React.useState([])
       const load = React.useCallback(() => {
         apiGet('/key').then((r) => {
           setInfo(r)
           if (r?.model) setModel(r.model)
           if (r?.apiBase) setApiBase(r.apiBase)
+          // 有 Key 就顺手把真实模型列表拉回来，不用手动点
+          if (r?.hasKey) {
+            apiGet('/models').then((m) => {
+              if (m?.ok && Array.isArray(m.models) && m.models.length) setRemoteModels(m.models)
+            }).catch(() => {})
+          }
         }).catch(() => setInfo({ ok: false }))
       }, [])
       React.useEffect(() => { load() }, [load])
@@ -534,7 +541,9 @@ window.__ModuleLoader__.load({
             h('div', { className: 'bd-set-row' },
               h('span', { className: 'bd-set-label' }, '模型'),
               (() => {
-                const known = info?.models || ['deepseek-chat', 'deepseek-reasoner']
+                const base = remoteModels.length ? remoteModels : (info?.models || ['deepseek-chat', 'deepseek-reasoner'])
+                // 当前用的模型不在列表里时，把它加进去当第一项，避免又冒出一个输入框
+                const known = model && !base.includes(model) ? [model, ...base] : base
                 const custom = !known.includes(model)
                 return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 } },
                   [
@@ -564,7 +573,7 @@ window.__ModuleLoader__.load({
                   ].filter(Boolean))
               })()),
             h('div', { className: 'bd-set-hint' },
-              'deepseek-chat 是日常对话模型；deepseek-reasoner 会先想再答，慢一点但更稳。名字以 DeepSeek 官网 API 文档为准。'),
+              '列表来自当前接口的 /models 返回，以它为准；chat / reasoner 只是常见别名。换了接口就点「拉取模型」重新取一次。'),
             h('div', { className: 'bd-set-row' },
               h('span', { className: 'bd-set-label' }, '接口'),
               h('input', {
@@ -585,6 +594,32 @@ window.__ModuleLoader__.load({
             }),
             h('div', { className: 'bd-comp-hint' }, '只在本机使用；Key、模型、接口地址保存后立即生效，无需重启。')),
           h('div', { className: 'bd-modal-foot' },
+            h('button', {
+              className: 'bd-btn',
+              disabled: busy,
+              title: '用当前 Key 请求 /models，把能用的模型列出来',
+              onClick: async () => {
+                setBusy(true)
+                const r = await apiGet('/models').catch((e) => ({ ok: false, error: String(e?.message ?? e) }))
+                setBusy(false)
+                if (!r?.ok) { toast(r?.error || '拉取失败'); return }
+                setRemoteModels(r.models || [])
+                const n = (r.models || []).length
+                toast(`拉到 ${n} 个模型，从下拉里挑`)
+              },
+            }, '拉取模型'),
+            h('button', {
+              className: 'bd-btn',
+              disabled: busy,
+              title: '用已保存的 Key / 模型 / 接口发一句 ping 试试',
+              onClick: async () => {
+                setBusy(true)
+                const r = await apiPost('/key/test', {}).catch((e) => ({ ok: false, error: String(e?.message ?? e) }))
+                setBusy(false)
+                if (r?.ok) toast(`通了：${r.model} 回了「${r.reply || '…'}」`)
+                else toast(`不通：${r?.error || '未知错误'}`)
+              },
+            }, busy ? '测试中…' : '测试'),
             h('button', { className: 'bd-btn', onClick: () => setAskClear(true), disabled: !info?.hasKey }, '清空'),
             h('button', {
               className: 'bd-primary',
