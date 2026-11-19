@@ -275,7 +275,11 @@ export function apply(ctx, config = {}) {
                 const sp = join(dirname(cfg.personaFile), 'samples.jsonl')
                 if (existsSync(sp)) samples = readFileSync(sp, 'utf8').split(/\r?\n/).filter(Boolean).length
               } catch { /* 忽略 */ }
-              return sendJson(res, 200, { ok: true, path: cfg.personaFile, text, mtime: st ? st.mtimeMs : 0, samples })
+              // 告诉前端「这次实际会读进去多少」，不然用户不知道归纳有没有被用上
+              const excerpt = personaExcerpt(text)
+              const used = ['二～六', text.includes('## 自动归纳') ? '自动归纳' : '', text.includes('## 九、') ? '例句库' : '', text.includes('## 十一、') ? '真实说话方式' : '']
+                .filter(Boolean).join(' + ')
+              return sendJson(res, 200, { ok: true, path: cfg.personaFile, text, mtime: st ? st.mtimeMs : 0, samples, excerptChars: excerpt.length, used })
             } catch (e) {
               return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) })
             }
@@ -512,7 +516,9 @@ export function apply(ctx, config = {}) {
                 '先判断他的态度，再决定出几条、怎么写。只输出 JSON 对象。',
                 '',
                 single
-                  ? `只出 1 条替换项：candidates 里只放 1 条，key 为 "${single}"，打法保持「${singleTag || '同风格'}」但换个说法。`
+                  ? (body?.longer
+                      ? `只出 1 条展开版：candidates 里只放 1 条，key 为 "${single}"，把「${singleTag || '同风格'}」这条写完整——60–120 字，可以两三句连起来说，仍然是本人语气；不要分点、不要总结、不要加标题、不要变成说教。`
+                      : `只出 1 条替换项：candidates 里只放 1 条，key 为 "${single}"，打法保持「${singleTag || '同风格'}」但换个说法。`)
                   : '固定输出 3 条：A 主选、B 变体、C 收尾。',
               ].join('\n')
 

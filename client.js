@@ -44,6 +44,27 @@ window.__ModuleLoader__.load({
       localStorage.setItem('bd-seen', JSON.stringify([...seen].slice(-300)))
     }
 
+    // 表情代码 → 图片；字数按「看得见的字」算，一个 [doge] 算 1 个字
+    const EMOTE_RE = /\[[^\[\]\n]{1,12}\]/g
+    const countChars = (t) => String(t || '').replace(EMOTE_RE, 'x').length
+    const renderRich = (text, map) => {
+      const s = String(text || '')
+      if (!map || !s.includes('[')) return s
+      const out = []
+      let last = 0
+      const re = /\[[^\[\]\n]{1,12}\]/g
+      let m
+      while ((m = re.exec(s))) {
+        if (m.index > last) out.push(s.slice(last, m.index))
+        const url = map[m[0]]
+        if (url) out.push(h('img', { key: `e${m.index}`, className: 'bd-emote-inline', src: url, alt: m[0], loading: 'lazy' }))
+        else out.push(m[0])
+        last = m.index + m[0].length
+      }
+      if (last < s.length) out.push(s.slice(last))
+      return out
+    }
+
     const STYLE = `
       .bd{--bg:var(--dsw-alias-bg-base,#fff);--l1:var(--dsw-alias-bg-layer-1,#f7f8fa);--l2:var(--dsw-alias-bg-layer-2,#fff);--l3:var(--dsw-alias-bg-layer-3,#eef0f3);--bd:var(--dsw-alias-border-l1,#e5e7eb);--tx:var(--dsw-alias-label-primary,#1f2328);--tx2:var(--dsw-alias-label-secondary,#5b6470);--tx3:var(--dsw-alias-label-caption,#8b939e);--acc:#fb7299;
         color:var(--tx);font-size:13px;line-height:1.5}
@@ -144,6 +165,7 @@ window.__ModuleLoader__.load({
       .bd-cand-head b{color:var(--acc);font-size:12.5px}
       .bd-cand-tag{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .bd-cand-len{white-space:nowrap}
+      .bd-emote-inline{height:17px;width:auto;vertical-align:-3px;margin:0 1px;border-radius:3px}
       .bd-cand-text{font-size:13px;line-height:19px;color:var(--tx)}
       .bd-empty{padding:14px;font-size:12px;color:var(--tx3)}
       .bd-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);display:grid;place-items:center;z-index:9999;padding:20px}
@@ -326,6 +348,7 @@ window.__ModuleLoader__.load({
       const [dirty, setDirty] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
       const [samples, setSamples] = React.useState(0)
+      const [used, setUsed] = React.useState(null)
       const [suggest, setSuggest] = React.useState('')
       const [suggesting, setSuggesting] = React.useState(false)
       const fileRef = React.useRef(null)
@@ -335,6 +358,7 @@ window.__ModuleLoader__.load({
           if (!r?.ok) { toast(r?.error || '读取失败'); return }
           setText(r.text || ''); setPath(r.path || ''); setMtime(r.mtime || 0); setDirty(false)
           setSamples(Number(r.samples) || 0)
+          setUsed({ chars: Number(r.excerptChars) || 0, parts: String(r.used || '') })
         })
       }, [toast])
       React.useEffect(() => { load() }, [load])
@@ -381,7 +405,9 @@ window.__ModuleLoader__.load({
               `语料 ${samples} 条${mtime ? ` · 更新于 ${fmt(mtime)}` : ''}`),
             h('button', { className: 'bd-btn', onClick: onClose }, '关闭')),
           h('div', { className: 'bd-modal-body' },
-            h('div', { className: 'bd-path' }, path ? `文件：${path}` : '加载中…'),
+            h('div', { className: 'bd-path' },
+              path ? `文件：${path}` : '加载中…',
+              used ? h('div', { style: { marginTop: 3 } }, `本次会让 AI 读：${used.parts || '二～六'}，约 ${used.chars} 字`) : null),
             h('textarea', {
               className: 'bd-ta',
               value: text,
@@ -491,7 +517,10 @@ window.__ModuleLoader__.load({
                 .filter((x) => !seen.has(Number(x.notifId)))
                 .filter((x) => now - (Number(x.time) || 0) < maxAge)
                 .sort((a, b) => b.time - a.time)
-              if (fresh[0]) setToast({ name: fresh[0].name, text: fresh[0].text, n: fresh.length })
+              if (fresh[0]) {
+                const f = fresh[0]
+                setToast({ key: `${f.bvid}|${f.root}|${f.mid}`, name: f.name, text: f.text, n: fresh.length })
+              }
             }
             if (maxId) localStorage.setItem('bd-last-notif', String(maxId))
           } catch { /* 网络抖动忽略 */ }
@@ -511,7 +540,7 @@ window.__ModuleLoader__.load({
       if (!toast) return null
       return h('div', {
         className: 'bd-note-toast',
-        onClick: () => { setToast(null); try { layout?.selectPanel?.('bili-banghui') } catch { /* 忽略 */ } },
+        onClick: () => { if (toast.key) window.dispatchEvent(new CustomEvent('bd-jump', { detail: { key: toast.key } })); setToast(null); try { layout?.selectPanel?.('bili-banghui') } catch { /* 忽略 */ } },
       },
         h('div', { style: { fontWeight: 600, marginBottom: 2 } }, `${toast.name} 回复了你${toast.n > 1 ? `（+${toast.n} 条）` : ''}`),
         h('div', { style: { fontSize: 12, opacity: .8 } }, toast.text.slice(0, 64)))
@@ -542,8 +571,29 @@ window.__ModuleLoader__.load({
       const [emojiPkgs, setEmojiPkgs] = React.useState([])
       const [emojiTab, setEmojiTab] = React.useState(0)
       const [emojiLoading, setEmojiLoading] = React.useState(false)
+      const [emoteMap, setEmoteMap] = React.useState({})
       const sendingRef = React.useRef(false)
       const reqSeq = React.useRef(0)
+      const taRef = React.useRef(null)
+
+      // 表情映射预先取一次，正文里就能直接渲染成图
+      React.useEffect(() => {
+        let off = false
+        apiGet('/emojis').then((r) => {
+          if (off || !r?.ok) return
+          const map = {}
+          for (const p of r.packages || []) for (const e of p.emotes || []) map[e.text] = e.url
+          setEmoteMap(map)
+        }).catch(() => {})
+        return () => { off = true }
+      }, [])
+
+      // 通知浮层点「跳到那个人」
+      React.useEffect(() => {
+        const onJump = (e) => { if (e?.detail?.key) setPicked(e.detail.key) }
+        window.addEventListener('bd-jump', onJump)
+        return () => window.removeEventListener('bd-jump', onJump)
+      }, [])
       const [menuOpen, setMenuOpen] = React.useState(false)
       const [loginOpen, setLoginOpen] = React.useState(false)
       const [personaOpen, setPersonaOpen] = React.useState(false)
@@ -585,6 +635,13 @@ window.__ModuleLoader__.load({
       }, [curKey])
       const [lastRefresh, setLastRefresh] = React.useState('')
               React.useEffect(() => { setCands([]); setReplyErr(''); setDraftErr(''); setStance(''); setPending((p) => p.filter((x) => x.key === curKey)) }, [curKey])
+      // 输入框随内容自动长高（多行不再只靠右下角拖）
+      React.useEffect(() => {
+        const el = taRef.current
+        if (!el) return
+        el.style.height = 'auto'
+        el.style.height = `${Math.min(el.scrollHeight, 180)}px`
+      }, [replyText, curKey])
       React.useEffect(() => { if (cur && cur.notifId) markSeen(cur.notifId) }, [curKey, cur && cur.notifId])
 
       const doRefresh = async () => {
@@ -637,7 +694,7 @@ window.__ModuleLoader__.load({
           h(Ava, { src: x.avatar, name: x.name }),
           h('div', { style: { minWidth: 0 } },
             h('div', { className: 'bd-nm' }, h('span', null, x.name), h('span', { className: 'bd-tm' }, fmt(x.time))),
-            h('div', { className: 'bd-sn strong' }, x.text),
+            h('div', { className: 'bd-sn strong' }, renderRich(x.text, emoteMap)),
             h('div', { className: 'bd-meta' },
               h('span', { className: 'bd-tag ' + (x.muted ? '' : x.replied ? 'ok' : 'hot') },
                 x.muted ? '不回' : x.replied ? '已回' : '未回'),
@@ -709,16 +766,16 @@ window.__ModuleLoader__.load({
         setStance(out.stance)
         setCands(out.list)
       }
-      const regenOne = async (key, tag) => {
-        const out = await genCands({ single: key, tag })
+      const regenOne = async (key, tag, longer) => {
+        const out = await genCands({ single: key, tag, ...(longer ? { longer: true } : {}) })
         const one = out && out.list && out.list[0]
         if (out?.stance) setStance(out.stance)
         if (one) setCands((arr) => arr.map((c) => (c.key === key ? { ...one, key } : c)))
       }
 
-      const doSend = async () => {
+      const doSend = async (arg) => {
         if (sendingRef.current) return
-        const text = confirmSend
+        const text = (typeof arg === 'string' ? arg : confirmSend).trim()
         if (!cur || !text) { setConfirmSend(''); return }
         sendingRef.current = true
         setConfirmSend('')
@@ -819,7 +876,7 @@ window.__ModuleLoader__.load({
                       h(Ava, { src: mine ? myFace : r.avatar, name: mine ? '我' : r.name }),
                       h('div', { className: 'bd-wrap' },
                         h('div', { className: 'bd-who' }, `${mine ? '我' : r.name} · ${fmt(r.time)}`),
-                        h('div', { className: 'bd-bub' }, r.text)))
+                        h('div', { className: 'bd-bub' }, renderRich(r.text, emoteMap))))
                   }),
                   extraHis.length ? (openBranch[curKey]
                     ? h('div', { key: 'extra' },
@@ -849,19 +906,28 @@ window.__ModuleLoader__.load({
                     h('div', { className: 'bd-cand-head' },
                       h('b', null, c.key),
                       h('span', { className: 'bd-cand-tag' }, c.tag),
-                      h('span', { className: 'bd-cand-len' }, `${c.text.length} 字`),
+                      h('span', { className: 'bd-cand-len' }, `${countChars(c.text)} 字`),
                       h('button', {
                         className: 'bd-cand-swap',
                         disabled: drafting,
+                        title: '换个说法',
                         onClick: (e) => { e.stopPropagation(); regenOne(c.key, c.tag) },
-                      }, '换一个')),
-                    h('div', { className: 'bd-cand-text' }, c.text)))) : null,
+                      }, '换一个'),
+                      h('button', {
+                        className: 'bd-cand-swap',
+                        disabled: drafting,
+                        title: '把这条写长一点',
+                        onClick: (e) => { e.stopPropagation(); regenOne(c.key, c.tag, true) },
+                      }, '长一点')),
+                    h('div', { className: 'bd-cand-text' }, renderRich(c.text, emoteMap))))) : null,
                 drafting ? h('div', { className: 'bd-comp-hint' }, '正在生成…') : null,
                 draftErr ? h('div', { className: 'bd-comp-err' }, draftErr) : null,
                 h('div', { className: 'bd-comp-box' },
                   h('textarea', {
                     className: 'bd-comp-ta',
+                    ref: taRef,
                     rows: 2,
+                    style: { resize: 'none', maxHeight: 180, overflowY: 'auto' },
                     maxLength: 1000,
                     placeholder: cur ? `回复 ${cur.name}…` : '左边选一条会话',
                     value: replyText,
@@ -914,7 +980,14 @@ window.__ModuleLoader__.load({
                       setConfirmSend(replyText.trim())
                     },
                   }, sending ? '发送中…' : '发送')),
-                replyErr ? h('div', { className: 'bd-comp-err' }, replyErr) : null)))),
+                replyErr ? h('div', { className: 'bd-comp-err' },
+                  replyErr,
+                  cur && replyText.trim() ? h('button', {
+                    className: 'bd-btn',
+                    style: { marginLeft: 8 },
+                    disabled: sending,
+                    onClick: () => doSend(replyText),
+                  }, sending ? '发送中…' : '重试') : null) : null)))),
 
         loginOpen ? h(LoginModal, {
           toast,
