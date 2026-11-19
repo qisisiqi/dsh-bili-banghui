@@ -138,6 +138,21 @@ const runPythonQr = (python, url) => new Promise((resolve) => {  const out = joi
 export function apply(ctx, config = {}) {
   try { mkdirSync(DATA_DIR, { recursive: true }) } catch { /* 兜住 */ }
   const cfg = { ...DEFAULTS, ...(config || {}) }
+
+// 模型/接口地址允许在页面里改：存 data/settings.json，优先于 patch 里的 config
+const settingsPath = () => join(dirname(cfg.keyFile), 'settings.json')
+const readModelSettings = () => {
+  try { return JSON.parse(readFileSync(settingsPath(), 'utf8')) || {} } catch { return {} }
+}
+const defaultModel = { apiBase: cfg.apiBase, model: cfg.model }
+const withTemp = (model, temperature) => (/reasoner/i.test(String(model)) ? {} : { temperature })
+const effectiveModel = () => {
+  const s = readModelSettings()
+  return {
+    apiBase: String(s.apiBase || defaultModel.apiBase),
+    model: String(s.model || defaultModel.model),
+  }
+}
   const web = ctx.get?.('webServer') ?? ctx.webServer
   const disposers = []
   const qrKeys = new Map()   // key -> { url, at }
@@ -270,16 +285,29 @@ export function apply(ctx, config = {}) {
             try {
               const text = existsSync(cfg.personaFile) ? readFileSync(cfg.personaFile, 'utf8') : ''
               const st = existsSync(cfg.personaFile) ? statSync(cfg.personaFile) : null
+              // 语料统计：总数 / 自上次总结以来新增（新增为 0 时前端不让点，避免反复总结同一批）
               let samples = 0
+              let lastSummarized = 0
+              const statePath = join(dirname(cfg.personaFile), 'persona-state.json')
               try {
                 const sp = join(dirname(cfg.personaFile), 'samples.jsonl')
                 if (existsSync(sp)) samples = readFileSync(sp, 'utf8').split(/\r?\n/).filter(Boolean).length
               } catch { /* 忽略 */ }
+              try {
+                if (existsSync(statePath)) lastSummarized = Number(JSON.parse(readFileSync(statePath, 'utf8')).lastSummarized) || 0
+              } catch { /* 忽略 */ }
+              const samplesNew = Math.max(0, samples - lastSummarized)
               // 告诉前端「这次实际会读进去多少」，不然用户不知道归纳有没有被用上
               const excerpt = personaExcerpt(text)
-              const used = ['二～六', text.includes('## 自动归纳') ? '自动归纳' : '', text.includes('## 九、') ? '例句库' : '', text.includes('## 十一、') ? '真实说话方式' : '']
-                .filter(Boolean).join(' + ')
-              return sendJson(res, 200, { ok: true, path: cfg.personaFile, text, mtime: st ? st.mtimeMs : 0, samples, excerptChars: excerpt.length, used })
+              const titles = [...text.matchAll(/^##\s+([^\n]+)/gm)].map((m) => m[1].trim())
+              const usedTitles = titles.filter((t) => !/^(十、|十一、)|维护|来源|隐私/.test(t))
+              return sendJson(res, 200, {
+                ok: true, path: cfg.personaFile, text, mtime: st ? st.mtimeMs : 0, samples, samplesNew,
+                excerptChars: excerpt.length,
+                totalChars: text.length,
+                sections: usedTitles.slice(0, 6),
+                used: usedTitles.length ? usedTitles.slice(0, 3).join(' + ') : '全文',
+              })
             } catch (e) {
               return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) })
             }
@@ -290,18 +318,27 @@ export function apply(ctx, config = {}) {
               if (!apiKey) return sendJson(res, 200, { ok: false, error: `没找到 API key：${cfg.keyFile}` })
               const sp = join(dirname(cfg.personaFile), 'samples.jsonl')
               if (!existsSync(sp)) return sendJson(res, 200, { ok: false, error: '还没有语料（samples.jsonl）' })
-              const lines = readFileSync(sp, 'utf8').split(/\r?\n/).filter(Boolean).slice(-80)
-              const samples = lines.map((l) => {
+              // 只总结「上次总结之后新加的」，点过一次就不再重复吃同一批
+              const allLines = readFileSync(sp, 'utf8').split(/\r?\n/).filter(Boolean)
+              const total = allLines.length
+              const statePath = join(dirname(cfg.personaFile), 'persona-state.json')
+              let last = 0
+              try {
+                if (existsSync(statePath)) last = Number(JSON.parse(readFileSync(statePath, 'utf8')).lastSummarized) || 0
+              } catch { /* 忽略 */ }
+              const fresh = allLines.slice(Math.min(last, total)).slice(-80)
+              if (!fresh.length) return sendJson(res, 200, { ok: false, error: '没有新语料了：总结过的不会再算一遍，等对方再回几条' })
+              const samples = fresh.map((l) => {
                 try { return String(JSON.parse(l).text || '') } catch { return '' }
               }).filter(Boolean)
-              if (samples.length < 3) return sendJson(res, 200, { ok: false, error: '样本太少（少于 3 条），先多发几条' })
+              if (samples.length < 3) return sendJson(res, 200, { ok: false, error: `新语料只有 ${samples.length} 条（至少 3 条才总结），先多回几条` })
               const persona = existsSync(cfg.personaFile) ? readFileSync(cfg.personaFile, 'utf8').slice(0, 6000) : ''
-              const resp = await fetch(`${String(cfg.apiBase).replace(/\/$/, '')}/chat/completions`, {
+              const resp = await fetch(`${String(effectiveModel().apiBase).replace(/\/$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
                 body: JSON.stringify({
-                  model: cfg.model,
-                  temperature: 0.3,
+                  model: effectiveModel().model,
+                  ...withTemp(effectiveModel().model, 0.3),
                   max_tokens: 700,
                   messages: [
                     { role: 'system', content: '你在帮 B站 用户整理自己的语言习惯。只输出 markdown 列表（每条一行 "- "），不要标题、不要解释。' },
@@ -313,7 +350,9 @@ export function apply(ctx, config = {}) {
               if (!resp.ok || !js) return sendJson(res, 200, { ok: false, error: `模型接口 HTTP ${resp.status}` })
               const text = String(js.choices?.[0]?.message?.content || '').trim()
               if (!text) return sendJson(res, 200, { ok: false, error: '模型没返回内容' })
-              return sendJson(res, 200, { ok: true, text, samples: samples.length })
+              // 记下吃到哪了：下次只总结这之后的新语料
+              try { writeFileSync(statePath, JSON.stringify({ lastSummarized: total }, null, 2), 'utf8') } catch { /* 忽略 */ }
+              return sendJson(res, 200, { ok: true, text, samples: samples.length, total })
             } catch (e) {
               return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) })
             }
@@ -338,8 +377,9 @@ export function apply(ctx, config = {}) {
               hasKey: !!k,
               path: cfg.keyFile,
               masked: k ? `${k.slice(0, 4)}****${k.slice(-4)}` : '',
-              apiBase: cfg.apiBase,
-              model: cfg.model,
+              apiBase: effectiveModel().apiBase,
+              model: effectiveModel().model,
+              models: ['deepseek-chat', 'deepseek-reasoner'],
             })
           }
           if (path === '/api/bili-banghui/key' && req.method === 'POST') {
@@ -351,12 +391,33 @@ export function apply(ctx, config = {}) {
               } catch (e) { return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) }) }
             }
             const key = String(body?.key || '').trim()
-            if (!/^sk-[A-Za-z0-9]{16,}$/.test(key)) {
+            const model = String(body?.model || '').trim()
+            const apiBase = String(body?.apiBase || '').trim()
+            if (key && !/^sk-[A-Za-z0-9]{16,}$/.test(key)) {
               return sendJson(res, 200, { ok: false, error: '格式不对：应以 sk- 开头，只含字母数字' })
             }
+            if (model && !/^[A-Za-z0-9._:-]{2,60}$/.test(model)) {
+              return sendJson(res, 200, { ok: false, error: '模型名不合法' })
+            }
+            if (apiBase && !/^https?:\/\/[^\s]+$/.test(apiBase)) {
+              return sendJson(res, 200, { ok: false, error: '接口地址要以 http(s):// 开头' })
+            }
             try {
-              await atomicWrite(cfg.keyFile, key, 'ascii')
-              return sendJson(res, 200, { ok: true, hasKey: true, masked: `${key.slice(0, 4)}****${key.slice(-4)}` })
+              if (key) await atomicWrite(cfg.keyFile, key, 'ascii')
+              if (model || apiBase) {
+                const next = readModelSettings()
+                if (model) next.model = model
+                if (apiBase) next.apiBase = apiBase.replace(/\/$/, '')
+                await atomicWrite(settingsPath(), JSON.stringify(next, null, 2), 'utf8')
+              }
+              const k2 = existsSync(cfg.keyFile) ? readFileSync(cfg.keyFile, 'utf8').trim() : ''
+              return sendJson(res, 200, {
+                ok: true,
+                hasKey: !!k2,
+                masked: k2 ? `${k2.slice(0, 4)}****${k2.slice(-4)}` : '',
+                model: effectiveModel().model,
+                apiBase: effectiveModel().apiBase,
+              })
             } catch (e) {
               return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) })
             }
@@ -487,12 +548,12 @@ export function apply(ctx, config = {}) {
               // 第一步：先单独判定态度（小请求、低温度），避免一份 prompt 里既判又写导致跑偏
               let stance = '中立'
               try {
-                const clsResp = await fetch(`${String(cfg.apiBase).replace(/\/$/, '')}/chat/completions`, {
+                const clsResp = await fetch(`${String(effectiveModel().apiBase).replace(/\/$/, '')}/chat/completions`, {
                   method: 'POST',
                   headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
                   body: JSON.stringify({
-                    model: cfg.model,
-                    temperature: 0,
+                    model: effectiveModel().model,
+                    ...withTemp(effectiveModel().model, 0),
                     max_tokens: 60,
                     messages: [
                       { role: 'system', content: STANCE_RULES },
@@ -522,12 +583,12 @@ export function apply(ctx, config = {}) {
                   : '固定输出 3 条：A 主选、B 变体、C 收尾。',
               ].join('\n')
 
-              const resp = await fetch(`${String(cfg.apiBase).replace(/\/$/, '')}/chat/completions`, {
+              const resp = await fetch(`${String(effectiveModel().apiBase).replace(/\/$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
                 body: JSON.stringify({
-                  model: cfg.model,
-                  temperature: 0.75,
+                  model: effectiveModel().model,
+                  ...withTemp(effectiveModel().model, 0.75),
                   max_tokens: 700,
                   messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
                 }),

@@ -183,9 +183,11 @@ window.__ModuleLoader__.load({
       .bd-suggest-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
       .bd-confirm-text{white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:20px;background:var(--l1);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;max-height:36vh;overflow:auto}
       .bd-path{font-size:11px;color:var(--tx3);margin-bottom:8px;word-break:break-all}
-      .bd-set-row{display:flex;gap:10px;font-size:12px;margin:6px 0}
-      .bd-set-label{color:var(--tx3);width:44px;flex:0 0 auto}
-      .bd-set-val{color:var(--tx2);word-break:break-all}
+      .bd-set-row{display:grid;grid-template-columns:52px 1fr;align-items:center;gap:12px;font-size:13.5px;margin:10px 0}
+      .bd-set-row>select,.bd-set-row>input{width:100%;min-width:0;margin:0}
+      .bd-set-label{color:var(--tx2);font-size:13px;white-space:nowrap;text-align:left}
+      .bd-set-val{color:var(--tx);word-break:break-all;font-size:13.5px}
+      .bd-set-hint{margin:-4px 0 8px 64px;font-size:12.5px;line-height:1.7;color:var(--tx3)}
       .bd-inp{width:100%;margin-top:12px;background:var(--l1);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font:12.5px/1.5 inherit;padding:8px 10px}
       .bd-primary{border:1px solid var(--acc);background:var(--acc);color:#fff;font:inherit;font-size:12px;padding:6px 14px;border-radius:8px;cursor:pointer}
       .bd-primary:disabled{opacity:.5;cursor:not-allowed}
@@ -348,6 +350,9 @@ window.__ModuleLoader__.load({
       const [dirty, setDirty] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
       const [samples, setSamples] = React.useState(0)
+      const [samplesNew, setSamplesNew] = React.useState(0)
+      const [askTemplate, setAskTemplate] = React.useState(false)
+      const [askReload, setAskReload] = React.useState(false)
       const [used, setUsed] = React.useState(null)
       const [suggest, setSuggest] = React.useState('')
       const [suggesting, setSuggesting] = React.useState(false)
@@ -357,8 +362,8 @@ window.__ModuleLoader__.load({
         apiGet('/persona').then((r) => {
           if (!r?.ok) { toast(r?.error || '读取失败'); return }
           setText(r.text || ''); setPath(r.path || ''); setMtime(r.mtime || 0); setDirty(false)
-          setSamples(Number(r.samples) || 0)
-          setUsed({ chars: Number(r.excerptChars) || 0, parts: String(r.used || '') })
+          setSamples(Number(r.samples) || 0); setSamplesNew(Number(r.samplesNew) || 0)
+          setUsed({ chars: Number(r.excerptChars) || 0, total: Number(r.totalChars) || 0, sections: Array.isArray(r.sections) ? r.sections : [] })
         })
       }, [toast])
       React.useEffect(() => { load() }, [load])
@@ -368,8 +373,9 @@ window.__ModuleLoader__.load({
         setSuggesting(true)
         const r = await apiPost('/persona/suggest', {}).catch((e) => ({ ok: false, error: String(e?.message ?? e) }))
         setSuggesting(false)
-        if (!r?.ok) { toast(r?.error || '归纳失败'); return }
+        if (!r?.ok) { toast(r?.error || '总结失败'); return }
         setSuggest(r.text || '')
+        setSamplesNew(0)
       }
       const applySuggest = () => {
         if (!suggest.trim()) return
@@ -401,13 +407,15 @@ window.__ModuleLoader__.load({
         h('div', { className: 'bd-modal' },
           h('div', { className: 'bd-modal-head' },
             h('span', { className: 'bd-modal-title' }, '人设档案'),
-            h('span', { style: { marginLeft: 'auto', fontSize: 11, color: 'var(--tx3)' } },
-              `语料 ${samples} 条${mtime ? ` · 更新于 ${fmt(mtime)}` : ''}`),
-            h('button', { className: 'bd-btn', onClick: onClose }, '关闭')),
+            h('button', { className: 'bd-btn', style: { marginLeft: 'auto' }, onClick: onClose }, '关闭')),
           h('div', { className: 'bd-modal-body' },
-            h('div', { className: 'bd-path' },
-              path ? `文件：${path}` : '加载中…',
-              used ? h('div', { style: { marginTop: 3 } }, `本次会让 AI 读：${used.parts || '二～六'}，约 ${used.chars} 字`) : null),
+            h('div', { className: 'bd-path', style: { fontSize: 14, lineHeight: 1.85, color: 'var(--tx)' } },
+              '这里写你怎么说话、什么立场、爱用哪些词，AI 回消息时会照着学。',
+              h('div', { style: { marginTop: 4 } }, '用 ## 分段读得更准；不分段就整篇读，最多读 6000 字左右，重要的往前放。'),
+              h('div', { style: { marginTop: 4 } }, '不会写就点「插入模板」照着改；写过的内容想补充，点「从回复总结语料」让它自己从你发过的话里总结。'),
+              !text.trim()
+                ? h('div', { style: { marginTop: 4 } }, '现在还是空的：不写也能用，只是 AI 不知道你的口气。')
+                : null),
             h('textarea', {
               className: 'bd-ta',
               value: text,
@@ -415,7 +423,7 @@ window.__ModuleLoader__.load({
               onChange: (e) => { setText(e.target.value); setDirty(true) },
             }),
             suggest ? h('div', { className: 'bd-suggest' },
-              h('div', { className: 'bd-suggest-head' }, '归纳结果（只追加到末尾，不改原文）'),
+              h('div', { className: 'bd-suggest-head' }, '总结结果（只追加到末尾，不改原文）'),
               h('pre', { className: 'bd-suggest-body' }, suggest),
               h('div', { className: 'bd-suggest-actions' },
                 h('button', { className: 'bd-btn', onClick: () => setSuggest('') }, '丢弃'),
@@ -423,43 +431,93 @@ window.__ModuleLoader__.load({
           h('div', { className: 'bd-modal-foot' },
             h('button', {
               className: 'bd-btn',
-              disabled: suggesting || samples < 3,
-              title: samples < 3 ? '语料少于 3 条，先多发几条' : '读最近 80 条语料，归纳新特征',
+              disabled: suggesting || samplesNew < 3,
+              title: samplesNew < 3 ? '新语料不足 3 条（总结过的不会重复算）' : '只总结上次之后的新语料',
               onClick: runSuggest,
-            }, suggesting ? '归纳中…' : `从样本归纳（${samples}）`),
+            }, suggesting ? '总结中…' : `从回复总结语料（${samplesNew}）`),
+            h('button', {
+              className: 'bd-btn',
+              title: '把当前内容存成 persona.md',
+              onClick: () => {
+                if (!text.trim()) { toast('档案还是空的'); return }
+                downloadText('persona.md', text)
+                toast('人设已导出')
+              },
+            }, '导出人设'),
             h('button', { className: 'bd-btn', onClick: () => fileRef.current?.click() }, '导入文件'),
             h('button', {
               className: 'bd-btn',
+              title: '插入一份示例人设，照着改',
+              onClick: () => setAskTemplate(true),
+            }, '插入模板'),
+            h('button', {
+              className: 'bd-btn',
               onClick: () => {
-                if (dirty && !window.confirm('放弃当前修改，重新从文件载入？')) return
-                load()
-                toast('已重新载入')
+                if (!dirty) { load(); toast('已重新载入'); return }
+                setAskReload(true)
               },
             }, '重新载入'),
             h('button', { className: 'bd-primary', disabled: busy || !dirty, onClick: save }, busy ? '保存中…' : '保存'),
-            h('input', { ref: fileRef, type: 'file', accept: '.md,.txt,text/markdown,text/plain', style: { display: 'none' }, onChange: onPick }))))
+            h('input', { ref: fileRef, type: 'file', accept: '.md,.txt,text/markdown,text/plain', style: { display: 'none' }, onChange: onPick }))),
+        askTemplate ? h('div', {
+          className: 'bd-mask',
+          style: { position: 'fixed', inset: 0, zIndex: 20 },
+          onClick: (e) => { if (e.target === e.currentTarget) setAskTemplate(false) },
+        },
+          h('div', { className: 'bd-modal', style: { width: 430 } },
+            h('div', { className: 'bd-modal-head' },
+              h('span', { className: 'bd-modal-title' }, '插入人设模板')),
+            h('div', { className: 'bd-modal-body' },
+              h('div', { style: { fontSize: 14, lineHeight: 1.8, color: 'var(--tx)' } }, '模板内容只供参考，可自行修改，或者导入你自己的模板。')),
+            h('div', { className: 'bd-modal-foot' },
+              h('button', { className: 'bd-btn', onClick: () => setAskTemplate(false) }, '取消'),
+              h('button', {
+                className: 'bd-primary',
+                onClick: () => {
+                  setText((t) => `${t.replace(/\s+$/, '')}${t.trim() ? '\n\n' : ''}${PERSONA_TEMPLATE}`)
+                  setDirty(true)
+                  setAskTemplate(false)
+                  toast('已插入模板，改完点保存')
+                },
+              }, '插入')))) : null,
+        askReload ? h(ConfirmBox, {
+          title: '重新载入',
+          text: '会放弃当前未保存的修改，从文件重新读一遍。确定？',
+          okLabel: '重新载入',
+          onCancel: () => setAskReload(false),
+          onOk: () => { setAskReload(false); load(); toast('已重新载入') },
+        }) : null)
     }
 
-    /* ── API Key 弹窗 ── */
+    /* ── API Key / 模型弹窗 ── */
     function KeyModal({ onClose, toast }) {
       const [info, setInfo] = React.useState(null)
       const [draft, setDraft] = React.useState('')
+      const [model, setModel] = React.useState('')
+      const [apiBase, setApiBase] = React.useState('')
       const [busy, setBusy] = React.useState(false)
-      const load = React.useCallback(() => { apiGet('/key').then(setInfo).catch(() => setInfo({ ok: false })) }, [])
+      const [askClear, setAskClear] = React.useState(false)
+      const load = React.useCallback(() => {
+        apiGet('/key').then((r) => {
+          setInfo(r)
+          if (r?.model) setModel(r.model)
+          if (r?.apiBase) setApiBase(r.apiBase)
+        }).catch(() => setInfo({ ok: false }))
+      }, [])
       React.useEffect(() => { load() }, [load])
       const save = async () => {
         const key = draft.trim()
-        if (!key) return
+        if (!key && !model.trim() && !apiBase.trim()) return
         setBusy(true)
-        const r = await apiPost('/key', { key }).catch((e) => ({ ok: false, error: String(e?.message ?? e) }))
+        const r = await apiPost('/key', { key, model: model.trim(), apiBase: apiBase.trim() })
+          .catch((e) => ({ ok: false, error: String(e?.message ?? e) }))
         setBusy(false)
         if (!r?.ok) { toast(r?.error || '保存失败'); return }
         setDraft('')
-        toast('Key 已更新')
+        toast(key ? 'Key 已更新' : '设置已保存')
         load()
       }
       const clear = async () => {
-        if (!window.confirm('清空 API Key？之后「AI帮回」会不可用。')) return
         const r = await apiPost('/key', { clear: true }).catch(() => ({ ok: false }))
         if (r?.ok) { toast('已清空'); load() }
       }
@@ -475,7 +533,48 @@ window.__ModuleLoader__.load({
               h('span', { className: 'bd-set-val' }, info?.hasKey ? info.masked : '未配置')),
             h('div', { className: 'bd-set-row' },
               h('span', { className: 'bd-set-label' }, '模型'),
-              h('span', { className: 'bd-set-val' }, info ? `${info.model} @ ${info.apiBase}` : '—')),
+              (() => {
+                const known = info?.models || ['deepseek-chat', 'deepseek-reasoner']
+                const custom = !known.includes(model)
+                return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 } },
+                  [
+                  h('select', {
+                    key: 'sel',
+                    className: 'bd-inp',
+                    style: { width: '100%', minWidth: 0 },
+                    value: custom ? '__custom__' : model,
+                    onChange: (e) => setModel(e.target.value === '__custom__' ? '' : e.target.value),
+                  },
+                    known.map((m) => h('option', { key: m, value: m },
+                      m === 'deepseek-chat' ? 'deepseek-chat · 日常对话（快）'
+                        : m === 'deepseek-reasoner' ? 'deepseek-reasoner · 先思考再答（慢）'
+                          : m)),
+                    h('option', { key: '__custom__', value: '__custom__' }, '自定义…')),
+                  custom || !model
+                    ? h('input', {
+                        key: 'inp',
+                        className: 'bd-inp',
+                        style: { width: '100%', minWidth: 0 },
+                        value: model,
+                        spellCheck: false,
+                        placeholder: '自己填模型名，例如 deepseek-chat',
+                        onChange: (e) => setModel(e.target.value),
+                      })
+                    : null,
+                  ].filter(Boolean))
+              })()),
+            h('div', { className: 'bd-set-hint' },
+              'deepseek-chat 是日常对话模型；deepseek-reasoner 会先想再答，慢一点但更稳。名字以 DeepSeek 官网 API 文档为准。'),
+            h('div', { className: 'bd-set-row' },
+              h('span', { className: 'bd-set-label' }, '接口'),
+              h('input', {
+                className: 'bd-inp',
+                style: { flex: 1, minWidth: 0 },
+                value: apiBase,
+                spellCheck: false,
+                placeholder: 'https://api.deepseek.com/v1',
+                onChange: (e) => setApiBase(e.target.value),
+              })),
             h('input', {
               className: 'bd-inp',
               type: 'password',
@@ -484,10 +583,99 @@ window.__ModuleLoader__.load({
               spellCheck: false,
               onChange: (e) => setDraft(e.target.value),
             }),
-            h('div', { className: 'bd-comp-hint' }, '只在本机使用；保存后立即生效，无需重启。')),
+            h('div', { className: 'bd-comp-hint' }, '只在本机使用；Key、模型、接口地址保存后立即生效，无需重启。')),
           h('div', { className: 'bd-modal-foot' },
-            h('button', { className: 'bd-btn', onClick: clear, disabled: !info?.hasKey }, '清空'),
-            h('button', { className: 'bd-primary', disabled: busy || !draft.trim(), onClick: save }, busy ? '保存中…' : '保存'))))
+            h('button', { className: 'bd-btn', onClick: () => setAskClear(true), disabled: !info?.hasKey }, '清空'),
+            h('button', {
+              className: 'bd-primary',
+              disabled: busy || !model.trim() || (!draft.trim() && model === info?.model && apiBase === info?.apiBase),
+              onClick: save,
+            }, busy ? '保存中…' : '保存'))),
+        askClear ? h(ConfirmBox, {
+          title: '清空 API Key',
+          text: '清空后「AI帮回」会不可用，要重新粘贴 Key。确定清空？',
+          okLabel: '清空',
+          onCancel: () => setAskClear(false),
+          onOk: () => { setAskClear(false); clear() },
+        }) : null)
+    }
+
+    // 把文本存成文件（人设、流水导出用）
+    const downloadText = (name, content) => {
+      const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove() }, 1000)
+    }
+
+    // 人设模板：插件主人设的脱敏版（本人改过的口吻），去掉账号/UID/语料来源等个人信息
+    const PERSONA_TEMPLATE = [
+      '## 我是谁',
+      '- 上班族；自嘲老头、牢玩家',
+      '- 用户心态：愿意为喜欢的东西掏钱，讨厌玩盗版还理直气壮跳脸的',
+      '- 玩二游和单机，也看科技、数码、时政；说话是论坛/评论区那一代的口吻',
+      '- 对「不合理，不理性，不唯物」不耐烦，但不会见人就怼',
+      '',
+      '## 我怎么想',
+      '- 论点先站得住：讲事实、讲逻辑、讲成本，谁主张谁举证；站不住就认',
+      '- 唯物主义：先看钱是谁出的、算力是谁买的、时间是谁花的，不从口号倒推结论',
+      '- 合理批判：有对象、有依据、点到为止，不拿身份和情绪当论据',
+      '- 合理怀疑：怀疑要给理由，对方讲清楚就不追究，不为赢而赢',
+      '- 说完就停，不追求说服',
+      '',
+      '## 我怎么说话',
+      '- 默认 15–35 字，一两句说完；讲理才到 60–100 字',
+      '- 结尾多是判断句；反问是偶尔一刀，不是每句都来',
+      '- 尾字：吧、呢、啊、嘛、呗；口头禅：其实、确实、说白了、就这么简单',
+      '- 起句常用「我看了 / 我试了 / 我刚才… / 有一说一 / 确实 / 懂得都懂」，先说自己做过什么',
+      '- 表情 1–3 个，爱连发两个同款',
+      '- 不满会直接点名：这点不好、这也太尴尬了、这个太 AI 了',
+      '- 对钱和时间务实：不差这点时间、没必要',
+      '',
+      '## 我怎么回',
+      '1. 复述归谬：把对方的诉求翻成「既要又要」',
+      '2. 指出偷换：对方替我加的观点，明确不认',
+      '3. 给现实方案：花钱买 API / 去医院 / 自己去了解',
+      '4. 拆逻辑分点：对方讲商业、讲机制时才用',
+      '5. 一句反问收尾：少用',
+      '6. 不接第二轮：说完就停',
+      '',
+      '## 我会接的话题',
+      '- 游戏剧情：认真、愿意论证',
+      '- 游戏吐槽：损、玩梗',
+      '- 数码/AI 付费：讲分配、讲掏钱',
+      '- 生活：务实、算账',
+      '- 对 UP 主：催更玩梗',
+      '',
+      '## 例句',
+      '- 那你花钱买api啊',
+      '- 想得挺美倒是，那付费的不成冤种了',
+      '- 有病就去医院，而不是盯着一个app搁着要求这要求那',
+      '- 无知不是罪，明明知道自己无知而不去改才是',
+      '- 哈哈哈，来了来了，投币了[doge]',
+      '',
+      '## 别学我什么',
+      '- 不学打错字，不带家属，不带地域，不主动引战',
+    ].join('\n')
+
+    /* ── 统一风格的确认框 ── */
+    function ConfirmBox({ title, text, okLabel = '确定', cancelLabel = '取消', onOk, onCancel }) {
+      return h('div', {
+        className: 'bd-mask',
+        style: { position: 'fixed', inset: 0, zIndex: 30 },
+        onClick: (e) => { if (e.target === e.currentTarget) onCancel() },
+      },
+        h('div', { className: 'bd-modal', style: { width: 430 } },
+          h('div', { className: 'bd-modal-head' },
+            h('span', { className: 'bd-modal-title' }, title)),
+          h('div', { className: 'bd-modal-body' },
+            h('div', { style: { fontSize: 14, lineHeight: 1.85, color: 'var(--tx)' } }, text)),
+          h('div', { className: 'bd-modal-foot' },
+            h('button', { className: 'bd-btn', onClick: onCancel }, cancelLabel),
+            h('button', { className: 'bd-primary', onClick: onOk }, okLabel))))
     }
 
     /* ── 新回复通知（全局浮层，右下角） ── */
