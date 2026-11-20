@@ -180,6 +180,21 @@ const effectiveModel = () => {
       return true
     } catch { return false }
   }
+  // 删除对话（本地隐藏）：记「隐藏到这条通知为止」，之后对方再回还会出现
+  const hiddenFile = join(dirname(cfg.keyFile), 'hidden.json')
+  const readHidden = () => {
+    try {
+      const o = JSON.parse(readFileSync(hiddenFile, 'utf8'))
+      return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}
+    } catch { return {} }
+  }
+  const writeHidden = (obj) => {
+    try {
+      mkdirSync(dirname(hiddenFile), { recursive: true })
+      writeFileSync(hiddenFile, JSON.stringify(obj), 'utf8')
+      return true
+    } catch { return false }
+  }
   const readBody = async (req) => {
     try {
       const chunks = []
@@ -339,7 +354,7 @@ const effectiveModel = () => {
                 body: JSON.stringify({
                   model: effectiveModel().model,
                   ...withTemp(effectiveModel().model, 0.3),
-                  max_tokens: 700,
+                  max_tokens: 2000,
                   messages: [
                     { role: 'system', content: '你在帮 B站 用户整理自己的语言习惯。只输出 markdown 列表（每条一行 "- "），不要标题、不要解释。' },
                     { role: 'user', content: `现有档案（只作参考，不要复述）：\n${persona}\n\n最近说过的 ${samples.length} 条评论：\n${samples.join('\n')}\n\n请归纳出 4–8 条「新出现的」语言特征：句式、口头禅、语气词、表情习惯、常聊话题。只写档案里还没有或写得不全的；不确定的不要写。` },
@@ -411,7 +426,7 @@ const effectiveModel = () => {
                 body: JSON.stringify({
                   model: eff.model,
                   ...withTemp(eff.model, 0),
-                  max_tokens: 8,
+                  max_tokens: 600,
                   messages: [{ role: 'user', content: 'ping' }],
                 }),
               })
@@ -472,6 +487,16 @@ const effectiveModel = () => {
             }
           }
 
+          if (req.method === 'POST' && path === '/api/bili-banghui/hide') {
+            const body = await readBody(req)
+            const key = String(body?.key || '')
+            const notifId = Number(body?.notifId || 0)
+            if (!key.includes('|') || !notifId) return sendJson(res, 200, { ok: false, error: '参数不对' })
+            const h = readHidden()
+            h[key] = notifId
+            return sendJson(res, 200, { ok: writeHidden(h) })
+          }
+
           // ── 已回 / 不回 状态 ──
           if (path === '/api/bili-banghui/state' && req.method === 'GET') {
             return sendJson(res, 200, { ok: true, muted: readMuted(), replied: [...readRepliedSet(join(dirname(cfg.personaFile), 'reply-log.md'))] })
@@ -491,6 +516,32 @@ const effectiveModel = () => {
           const cred = readCred(cfg.credFile)
           if (!cred) return sendJson(res, 200, { ok: false, error: '未登录：请点右上角登录', items: [], rows: [] })
           const cookie = cookieOf(cred)
+
+          // ── 拉黑对方（B站 relation/modify act=5） ──
+          if (req.method === 'POST' && path === '/api/bili-banghui/block') {
+            try {
+              const body = await readBody(req)
+              const mid = Number(body?.mid || 0)
+              if (!mid) return sendJson(res, 200, { ok: false, error: '缺少对方 mid' })
+              if (!cred.bili_jct) return sendJson(res, 200, { ok: false, error: '凭证缺少 bili_jct，请重新扫码' })
+              const form = new URLSearchParams({ fid: String(mid), act: '5', re_src: '11', csrf: cred.bili_jct })
+              const r = await fetch('https://api.bilibili.com/x/relation/modify', {
+                method: 'POST',
+                headers: {
+                  'User-Agent': UA, Cookie: cookie, Referer: 'https://www.bilibili.com/',
+                  'content-type': 'application/x-www-form-urlencoded',
+                },
+                body: form,
+              })
+              const j = await r.json().catch(() => null)
+              if (!j || j.code !== 0) {
+                return sendJson(res, 200, { ok: false, error: `B站返回 ${j?.code ?? '?'}：${j?.message || '无响应'}` })
+              }
+              return sendJson(res, 200, { ok: true, mid })
+            } catch (e) {
+              return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) })
+            }
+          }
 
           if (req.method === 'POST' && path === '/api/bili-banghui/reply') {
             try {
@@ -526,7 +577,15 @@ const effectiveModel = () => {
               })
               const j = await r.json().catch(() => null)
               if (!j || j.code !== 0) {
-                return sendJson(res, 200, { ok: false, error: `B站返回 ${j?.code ?? '?'}：${j?.message || '无响应'}` })
+                const msg = String(j?.message || '无响应')
+                // 对方把我拉黑/屏蔽了：单独标出来，前端会问要不要记进「不回」
+                const blocked = /黑名单|拉黑|屏蔽|blocked|block list/i.test(msg)
+                return sendJson(res, 200, {
+                  ok: false,
+                  blocked,
+                  code: Number(j?.code) || 0,
+                  error: `B站返回 ${j?.code ?? '?'}：${msg}`,
+                })
               }
               const newRpid = Number(j.data?.rpid) || 0
               sendGuard.set(guardKey, Date.now())
@@ -570,7 +629,12 @@ const effectiveModel = () => {
               replied: replied.has(Number(x.source)),
               muted: muted.has(`${x.bvid}|${x.root}|${x.mid}`),
             }))
-            return sendJson(res, 200, { ok: true, items: out })
+            const hidden = readHidden()
+            const visible = out.filter((x) => {
+              const until = Number(hidden[`${x.bvid}|${x.root}|${x.mid}`] || 0)
+              return !(until && Number(x.notifId) <= until)
+            })
+            return sendJson(res, 200, { ok: true, items: visible })
           }
           if (req.method === 'POST' && path === '/api/bili-banghui/draft') {
             try {
@@ -603,7 +667,7 @@ const effectiveModel = () => {
                   body: JSON.stringify({
                     model: effectiveModel().model,
                     ...withTemp(effectiveModel().model, 0),
-                    max_tokens: 60,
+                    max_tokens: 800,
                     messages: [
                       { role: 'system', content: STANCE_RULES },
                       { role: 'user', content: `主楼：${rootText}\n我说过：${mine || '（无）'}\n他回我：“${his}”` },
@@ -611,9 +675,10 @@ const effectiveModel = () => {
                   }),
                 })
                 const cls = await clsResp.json().catch(() => null)
-                const word = String(cls?.choices?.[0]?.message?.content || '').trim()
+                const msgObj = cls?.choices?.[0]?.message || {}
+                const word = String(msgObj.content || msgObj.reasoning_content || '').trim()
                 // 取第一个出现的标签（后面的理由里可能提到别的态度）
-                stance = (word.match(/赞同|友善|中立|抬杠|攻击/) || [])[0] || '中立'
+                stance = (word.match(/罕见发言|赞同|友善|中立|抬杠|攻击/) || [])[0] || '中立'
               } catch { /* 判不出来按中立 */ }
 
               const user = [
@@ -629,7 +694,9 @@ const effectiveModel = () => {
                   ? (body?.longer
                       ? `只出 1 条展开版：candidates 里只放 1 条，key 为 "${single}"，把「${singleTag || '同风格'}」这条写完整——60–120 字，可以两三句连起来说，仍然是本人语气；不要分点、不要总结、不要加标题、不要变成说教。`
                       : `只出 1 条替换项：candidates 里只放 1 条，key 为 "${single}"，打法保持「${singleTag || '同风格'}」但换个说法。`)
-                  : '固定输出 3 条：A 主选、B 变体、C 收尾。',
+                  : (stance === '罕见发言' || stance === '攻击')
+                    ? '固定输出 3 条，三个不同角度，不要「主选/变体/收尾」那套：A 嘲讽（看笑话式冷嘲）、B 反问（拿他的逻辑顶回去）、C 挖苦（阴阳他这个人，但不带脏话、不贴族群标签、不问候家人）。三条都要短、要狠、要留白。'
+                    : '固定输出 3 条：A 主选、B 变体、C 收尾。',
               ].join('\n')
 
               const resp = await fetch(`${String(effectiveModel().apiBase).replace(/\/$/, '')}/chat/completions`, {
@@ -638,7 +705,7 @@ const effectiveModel = () => {
                 body: JSON.stringify({
                   model: effectiveModel().model,
                   ...withTemp(effectiveModel().model, 0.75),
-                  max_tokens: 700,
+                  max_tokens: 2000,
                   messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
                 }),
               })

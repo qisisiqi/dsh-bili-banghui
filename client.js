@@ -29,6 +29,12 @@ window.__ModuleLoader__.load({
     }
 
     // 看过哪几条（打开过就算），轮询不再推这些
+    // 自动清理：多少天没新回复就不在列表里显示（只影响显示，不动 B站）
+    const readTtl = () => {
+      const v = Number(localStorage.getItem('bd-ttl') || 0)
+      return [0, 30, 60, 90, 180].includes(v) ? v : 0
+    }
+
     const readSeen = () => {
       try {
         const arr = JSON.parse(localStorage.getItem('bd-seen') || '[]')
@@ -90,9 +96,14 @@ window.__ModuleLoader__.load({
       .bd-menu-sub{font-size:11px;color:var(--tx3);margin-top:2px}
       .bd-menu-item{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--tx);font:inherit;font-size:12.5px;padding:7px 9px;border-radius:7px;cursor:pointer}
       .bd-menu-item:hover{background:var(--l3)}
+      .bd-menu-sep{border-top:1px solid var(--bd);margin:6px 0}
+      .bd-menu-label{font-size:10.5px;color:var(--tx3);padding:2px 9px 4px}
+      .bd-menu-select{width:calc(100% - 12px);margin:0 6px 6px;background:var(--l2);border:1px solid var(--bd);border-radius:7px;color:var(--tx);font:12px/1.6 inherit;padding:5px 7px}
+      .bd-list-abs{position:absolute;top:7px;right:9px;z-index:2}
+      .bd-clear-list{font-size:10.5px;line-height:1;padding:3px 7px;border-radius:99px;background:var(--l1)}
       .bd-warn{margin-bottom:10px;padding:8px 12px;border-radius:8px;border:1px solid rgba(251,114,153,.4);background:rgba(251,114,153,.08);color:var(--tx2);font-size:12px}
       .bd-grid{display:grid;grid-template-columns:300px 1fr;gap:12px;height:min(700px,calc(100dvh - 250px));min-height:380px}
-      .bd-list{border:1px solid var(--bd);border-radius:10px;background:var(--l1);overflow:auto;min-height:0}
+      .bd-list{position:relative;border:1px solid var(--bd);border-radius:10px;background:var(--l1);overflow:auto;min-height:0}
       .bd-group{position:sticky;top:0;z-index:1;padding:7px 11px 5px;font-size:10.5px;color:var(--tx3);background:var(--l1);border-bottom:1px solid var(--bd)}
       .bd-row{display:grid;grid-template-columns:46px 1fr;gap:9px;width:100%;text-align:left;border:0;border-bottom:1px solid var(--bd);background:transparent;color:inherit;padding:10px 11px;cursor:pointer}
       .bd-row:hover{background:var(--l3)}
@@ -697,7 +708,7 @@ window.__ModuleLoader__.load({
     ].join('\n')
 
     /* ── 统一风格的确认框 ── */
-    function ConfirmBox({ title, text, okLabel = '确定', cancelLabel = '取消', onOk, onCancel }) {
+    function ConfirmBox({ title, text, okLabel = '确定', cancelLabel = '取消', actions = [], onOk, onCancel }) {
       return h('div', {
         className: 'bd-mask',
         style: { position: 'fixed', inset: 0, zIndex: 30 },
@@ -709,6 +720,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'bd-modal-body' },
             h('div', { style: { fontSize: 14, lineHeight: 1.85, color: 'var(--tx)' } }, text)),
           h('div', { className: 'bd-modal-foot' },
+            actions.map((a, i) => h('button', { key: `a${i}`, className: 'bd-btn', onClick: a.onClick }, a.label)),
             h('button', { className: 'bd-btn', onClick: onCancel }, cancelLabel),
             h('button', { className: 'bd-primary', onClick: onOk }, okLabel))))
     }
@@ -780,6 +792,8 @@ window.__ModuleLoader__.load({
 
       const [range, setRange] = React.useState('7d')
       const [statusFilter, setStatusFilter] = React.useState('all')
+      const [ttl, setTtl] = React.useState(readTtl)
+      const [askClearList, setAskClearList] = React.useState(false)
       const [picked, setPicked] = React.useState('')
       const [sending, setSending] = React.useState(false)
       const [replyErr, setReplyErr] = React.useState('')
@@ -789,7 +803,10 @@ window.__ModuleLoader__.load({
       const [draftErr, setDraftErr] = React.useState('')
       const [stance, setStance] = React.useState('')
       const [confirmSend, setConfirmSend] = React.useState('')
+      const [askBlock, setAskBlock] = React.useState(null)
+      const [askDelete, setAskDelete] = React.useState(null)
       const [pending, setPending] = React.useState([])
+      const [localReplied, setLocalReplied] = React.useState({})
       const [emojiOpen, setEmojiOpen] = React.useState(false)
       const [emojiPkgs, setEmojiPkgs] = React.useState([])
       const [emojiTab, setEmojiTab] = React.useState(0)
@@ -798,6 +815,7 @@ window.__ModuleLoader__.load({
       const sendingRef = React.useRef(false)
       const reqSeq = React.useRef(0)
       const taRef = React.useRef(null)
+      const checkedRef = React.useRef({})
 
       // 表情映射预先取一次，正文里就能直接渲染成图
       React.useEffect(() => {
@@ -841,12 +859,45 @@ window.__ModuleLoader__.load({
       const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
       const cutoff = range === 'today' ? dayStart(new Date())
         : range === '7d' ? dayStart(new Date()) - 6 * 86400000 : 0
-      const shown = items.filter((x) => x.time >= cutoff).filter((x) => {
-        if (statusFilter === 'todo') return !x.replied && !x.muted
-        if (statusFilter === 'done') return x.replied || x.muted
-        return true
-      })
+      const nowTs = Date.now()
+      const shown = items
+        .filter((x) => x.time >= cutoff)
+        .filter((x) => !ttl || x.time >= nowTs - ttl * 86400000)
+        .filter((x) => {
+          if (statusFilter === 'mute') return x.muted
+          if (statusFilter === 'todo') return !x.replied && !localReplied[`${x.bvid}|${x.root}|${x.mid}`] && !x.muted
+          if (statusFilter === 'done') return (x.replied || localReplied[`${x.bvid}|${x.root}|${x.mid}`]) && !x.muted
+          return true
+        })
       const keyOf = (x) => `${x.bvid}|${x.root}|${x.mid}`
+
+      // 后台补判「站内已回」：楼层最后一条是我发的就算回过了（不用一个个点开）
+      React.useEffect(() => {
+        if (!items.length || !myMid) return undefined
+        let cancelled = false
+        const todo = items.filter((x) => !x.replied && !x.muted && !checkedRef.current[keyOf(x)]).slice(0, 30)
+        if (!todo.length) return undefined
+        const run = async () => {
+          for (let i = 0; i < todo.length; i += 3) {
+            if (cancelled) return
+            await Promise.all(todo.slice(i, i + 3).map(async (x) => {
+              const key = keyOf(x)
+              if (checkedRef.current[key]) return
+              const r = await apiGet(`/thread?bvid=${encodeURIComponent(x.bvid)}&root=${encodeURIComponent(x.root)}&target=${encodeURIComponent(x.source)}`).catch(() => null)
+              if (cancelled || !r?.ok || !Array.isArray(r.rows) || !r.rows.length) return
+              checkedRef.current[key] = true
+              const duo = r.rows.filter((z) => Number(z.mid) === Number(myMid) || Number(z.mid) === Number(x.mid))
+              const last = [...duo].sort((a, b) => a.time - b.time).at(-1)
+              if (last && Number(last.mid) === Number(myMid)) {
+                setLocalReplied((m) => (m[key] ? m : { ...m, [key]: true }))
+              }
+            }))
+          }
+        }
+        run()
+        return () => { cancelled = true }
+      }, [items.length, myMid])
+
       const cur = shown.find((x) => keyOf(x) === picked) || shown[0] || null
       React.useEffect(() => { if (!picked && shown.length) setPicked(keyOf(shown[0])) }, [shown.length, picked])
 
@@ -886,8 +937,19 @@ window.__ModuleLoader__.load({
         if (!curKey) return { ok: true, rows: [] }
         const [bvid, root] = curKey.split('|')
         const target = Number(cur && cur.source) || 0
-        return apiGet(`/thread?bvid=${encodeURIComponent(bvid)}&root=${encodeURIComponent(root)}&target=${target}&fresh=${ver}`)
+        const r = await apiGet(`/thread?bvid=${encodeURIComponent(bvid)}&root=${encodeURIComponent(root)}&target=${target}&fresh=${ver}`)
+        return { ...r, __key: curKey }
       }, [curKey, ver, cur && cur.source]), 60000)
+      // 站内直接回过的：楼层最后一条是我就算已回（不然只有插件发的才认）
+      React.useEffect(() => {
+        const data = thread.data
+        if (!curKey || !data || data.__key !== curKey || !Array.isArray(data.rows) || !myMid || !cur) return
+        // 只看「我」和「他」这两人的往来，别人的插话不算数
+        const duo = data.rows.filter((r) => Number(r.mid) === Number(myMid) || Number(r.mid) === Number(cur.mid))
+        const last = [...duo].sort((a, b) => a.time - b.time).at(-1)
+        const mineLast = !!(last && Number(last.mid) === Number(myMid))
+        setLocalReplied((m) => (m[curKey] === mineLast ? m : { ...m, [curKey]: mineLast }))
+      }, [curKey, thread.data, myMid, cur && cur.mid])
       const rowsRaw = Array.isArray(thread.data?.rows) ? thread.data.rows : []
       // 楼层太长时后端只取最新一段：通知里那条一定补上，保证「我在回他哪句」看得到
       const rows = (() => {
@@ -919,8 +981,8 @@ window.__ModuleLoader__.load({
             h('div', { className: 'bd-nm' }, h('span', null, x.name), h('span', { className: 'bd-tm' }, fmt(x.time))),
             h('div', { className: 'bd-sn strong' }, renderRich(x.text, emoteMap)),
             h('div', { className: 'bd-meta' },
-              h('span', { className: 'bd-tag ' + (x.muted ? '' : x.replied ? 'ok' : 'hot') },
-                x.muted ? '不回' : x.replied ? '已回' : '未回'),
+              h('span', { className: 'bd-tag ' + (x.muted ? '' : (x.replied || localReplied[keyOf(x)]) ? 'ok' : 'hot') },
+                x.muted ? '不回' : (x.replied || localReplied[keyOf(x)]) ? '已回' : '未回'),
               x.count > 1 ? h('span', { className: 'bd-tag' }, `聊了 ${x.count} 次`) : null,
               h('button', {
                 className: 'bd-row-mute',
@@ -929,7 +991,16 @@ window.__ModuleLoader__.load({
                   await apiPost('/state', { key: `${x.bvid}|${x.root}|${x.mid}`, muted: !x.muted })
                   list.refresh()
                 },
-              }, x.muted ? '恢复' : '不回')))))
+              }, x.muted ? '恢复' : '不回'),
+              h('button', {
+                className: 'bd-row-mute',
+                style: { marginLeft: 6 },
+                title: '从列表里删掉这个对话',
+                onClick: (e) => {
+                  e.stopPropagation()
+                  setAskDelete({ key: keyOf(x), notifId: Number(x.notifId) || 0 })
+                },
+              }, '删除')))))
       }
 
       // ── 右侧：主楼 + 我和他在这层的往来（只留你俩的对话） ──
@@ -940,19 +1011,31 @@ window.__ModuleLoader__.load({
       const isHis = (r) => !!(cur && r && r.mid === cur.mid)
       const inSet = new Set()
       if (cur) {
-        // 他直接回主楼或回你的，作为起点
-        for (const r of floorRows) {
-          if (isHis(r) && (r.target === rootId || isMine(byId.get(r.target)))) inSet.add(r.rpid)
+        const addRow = (r) => {
+          if (!r || inSet.has(r.rpid)) return false
+          if (!(isMine(r) || isHis(r))) return false
+          inSet.add(r.rpid)
+          return true
         }
-        // 沿 target 链只扩展「你俩」的节点，别人的插话不进来
+        // 起点：他回主楼/回我的；我在这一层回主楼的；当前通知指向的那条
+        for (const r of floorRows) {
+          if (isHis(r) && (r.target === rootId || isMine(byId.get(r.target)))) addRow(r)
+          if (isMine(r) && r.target === rootId) addRow(r)
+        }
+        addRow(byId.get(Number(cur.source) || 0))
+        // 双向补全：往下接你俩的子孙，往上补父节点（我在站内直接回主楼的那条也能回来）
         let changed = true
         while (changed) {
           changed = false
           for (const r of floorRows) {
-            if (inSet.has(r.rpid)) continue
-            const t = byId.get(r.target)
-            if (!t || !inSet.has(t.rpid)) continue
-            if (isMine(r) || isHis(r)) { inSet.add(r.rpid); changed = true }
+            if (!(isMine(r) || isHis(r))) continue
+            if (inSet.has(r.rpid)) {
+              const p = byId.get(r.target)
+              if (p && addRow(p)) changed = true
+            } else {
+              const t = byId.get(r.target)
+              if (t && inSet.has(t.rpid) && addRow(r)) changed = true
+            }
           }
         }
       }
@@ -964,7 +1047,8 @@ window.__ModuleLoader__.load({
         .map((p) => p.row)
         .filter((r) => !floorIds.has(Number(r.rpid))
           && !floorRows.some((f) => f.mid === r.mid && f.text === r.text && Math.abs(Number(f.time) - Number(r.time)) < 180000))
-      const shownRows = [...chainRows, ...pendingRows]
+      // 拉黑/删评论后楼层里可能缺他那条（用通知补的），所以统一按时间再排一次
+      const shownRows = [...chainRows, ...pendingRows].sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0))
       const extraHis = cur ? floorRows.filter((r) => isHis(r) && !inSet.has(r.rpid)) : []
 
       const genCands = async (extra) => {
@@ -1014,7 +1098,11 @@ window.__ModuleLoader__.load({
         }).catch((e) => ({ ok: false, error: String(e?.message ?? e) }))
         sendingRef.current = false
         setSending(false)
-        if (!r?.ok) { setReplyErr(r?.error || '发送失败'); return }
+        if (!r?.ok) {
+          setReplyErr(r?.error || '发送失败')
+          if (r?.blocked) setAskBlock({ key, mid: Number(cur?.mid) || 0, notifId: Number(cur?.notifId) || 0, msg: r.error || '对方可能把你拉黑了' })
+          return
+        }
         if (r.rpid) snap.row.rpid = r.rpid
         setPending((p) => [...p, snap])
         setReplyText('')
@@ -1037,7 +1125,7 @@ window.__ModuleLoader__.load({
               h('p', { className: 'bd-sub' }, `${T.subtitle} · ${shown.length} 个楼层${lastRefresh ? ` · 上次刷新 ${lastRefresh}` : ''}`)),
             h('div', { className: 'bd-tools' },
               h('div', { className: 'bd-tabs', role: 'tablist' },
-                [['all', '全部'], ['todo', '待回'], ['done', '已回']].map(([k, label]) =>
+                [['all', '全部'], ['todo', '待回'], ['done', '已回'], ['mute', '不回']].map(([k, label]) =>
                   h('button', {
                     key: k, className: 'bd-tab', role: 'tab', 'aria-selected': String(statusFilter === k),
                     onClick: () => setStatusFilter(k),
@@ -1073,10 +1161,31 @@ window.__ModuleLoader__.load({
                     h('div', { className: 'bd-menu-sub' }, `UID ${myMid}`)),
                   h('button', { className: 'bd-menu-item', onClick: () => { setMenuOpen(false); setPersonaOpen(true) } }, '人设档案'),
                   h('button', { className: 'bd-menu-item', onClick: () => { setMenuOpen(false); setKeyOpen(true) } }, 'API Key'),
+                  h('div', { className: 'bd-menu-sep' }),
+                  h('div', { className: 'bd-menu-label' }, '自动清理旧对话'),
+                  h('select', {
+                    className: 'bd-menu-select',
+                    onClick: (e) => e.stopPropagation(),
+                    value: String(ttl),
+                    onChange: (e) => {
+                      const v = Number(e.target.value)
+                      localStorage.setItem('bd-ttl', String(v))
+                      setTtl(v)
+                      setMenuOpen(false)
+                    },
+                  },
+                    [[0, '不清理'], [30, '30 天没新回复'], [60, '60 天'], [90, '90 天'], [180, '180 天']].map(([v, label]) =>
+                      h('option', { key: v, value: String(v) }, label))),
                   h('button', { className: 'bd-menu-item', onClick: () => { setMenuOpen(false); setLoginOpen(true) } }, '重新扫码登录')) : null))),
           warn ? h('div', { className: 'bd-warn' }, warn) : null,
           h('div', { className: 'bd-grid' },
             h('div', { className: 'bd-list' },
+              h('button', {
+                className: 'bd-btn bd-clear-list bd-list-abs',
+                disabled: !items.length,
+                title: '把当前列表里的对话从本地隐藏',
+                onClick: () => setAskClearList(true),
+              }, '清空列表'),
               shown.length ? listNodes : h('div', { className: 'bd-empty' }, list.data ? '这段时间没有回复' : '加载中…')),
             h('div', { className: 'bd-chat' },
               h('div', { className: 'bd-chat-head' },
@@ -1219,6 +1328,62 @@ window.__ModuleLoader__.load({
         }) : null,
         personaOpen ? h(PersonaModal, { toast, onClose: () => setPersonaOpen(false) }) : null,
         keyOpen ? h(KeyModal, { toast, onClose: () => setKeyOpen(false) }) : null,
+        askBlock ? h(ConfirmBox, {
+          title: '回不了这条了',
+          text: askBlock.msg + '。可以只标记不回，也可以顺手把对方加入 B站 黑名单，并把这个对话删掉。',
+          okLabel: '拉黑并删除',
+          cancelLabel: '先不了',
+          actions: [{
+            label: '标记不回',
+            onClick: async () => {
+              const k = askBlock.key
+              setAskBlock(null)
+              const res = await apiPost('/state', { key: k, muted: true }).catch(() => null)
+              if (res?.ok) { toast('已标记不回'); list.refresh() } else toast('标记失败')
+            },
+          }],
+          onCancel: () => setAskBlock(null),
+          onOk: async () => {
+            const snap = askBlock
+            setAskBlock(null)
+            const b = await apiPost('/block', { mid: snap.mid }).catch((e) => ({ ok: false, error: String(e?.message ?? e) }))
+            if (!b?.ok) { toast('拉黑失败：' + (b?.error || '')); return }
+            const hideRes = await apiPost('/hide', { key: snap.key, notifId: snap.notifId }).catch(() => null)
+            if (!hideRes?.ok) { toast('已拉黑，但删除对话失败'); return }
+            toast('已拉黑并删除对话')
+            setPicked('')
+            list.refresh()
+          },
+        }) : null,
+        askClearList ? h(ConfirmBox, {
+          title: '清空列表',
+          text: '把现在的 ' + items.length + ' 个对话全部从本地隐藏（不只看今天，也不管当前筛选），不动 B站 上的评论；对方以后再回，会重新出现。确定？',
+          okLabel: '清空',
+          onCancel: () => setAskClearList(false),
+          onOk: async () => {
+            const list1 = items.map((x) => ({ key: `${x.bvid}|${x.root}|${x.mid}`, notifId: Number(x.notifId) || 0 }))
+            setAskClearList(false)
+            await Promise.all(list1.map((it) => apiPost('/hide', it).catch(() => null)))
+            setPicked('')
+            toast(`已清空 ${list1.length} 个对话`)
+            list.refresh()
+          },
+        }) : null,
+        askDelete ? h(ConfirmBox, {
+          title: '删除对话',
+          text: '只是从这个列表里删掉，不会动 B站 上的评论。对方之后再回你，会重新出现。',
+          okLabel: '删除',
+          onCancel: () => setAskDelete(null),
+          onOk: async () => {
+            const snap = askDelete
+            setAskDelete(null)
+            const r = await apiPost('/hide', { key: snap.key, notifId: snap.notifId }).catch(() => null)
+            if (!r?.ok) { toast('删除失败'); return }
+            if (snap.key === curKey) setPicked('')
+            toast('已删除这个对话')
+            list.refresh()
+          },
+        }) : null,
         confirmSend ? h('div', {
           className: 'bd-mask',
           onClick: (e) => { if (e.target === e.currentTarget) setConfirmSend('') },
