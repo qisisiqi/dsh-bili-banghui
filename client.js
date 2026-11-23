@@ -886,9 +886,8 @@ window.__ModuleLoader__.load({
               const r = await apiGet(`/thread?bvid=${encodeURIComponent(x.bvid)}&root=${encodeURIComponent(x.root)}&target=${encodeURIComponent(x.source)}`).catch(() => null)
               if (cancelled || !r?.ok || !Array.isArray(r.rows) || !r.rows.length) return
               checkedRef.current[key] = true
-              const duo = r.rows.filter((z) => Number(z.mid) === Number(myMid) || Number(z.mid) === Number(x.mid))
-              const last = [...duo].sort((a, b) => a.time - b.time).at(-1)
-              if (last && Number(last.mid) === Number(myMid)) {
+              const mineDirect = r.rows.some((z) => Number(z.mid) === Number(myMid) && Number(z.target) === Number(x.source))
+              if (mineDirect) {
                 setLocalReplied((m) => (m[key] ? m : { ...m, [key]: true }))
               }
             }))
@@ -944,10 +943,8 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         const data = thread.data
         if (!curKey || !data || data.__key !== curKey || !Array.isArray(data.rows) || !myMid || !cur) return
-        // 只看「我」和「他」这两人的往来，别人的插话不算数
-        const duo = data.rows.filter((r) => Number(r.mid) === Number(myMid) || Number(r.mid) === Number(cur.mid))
-        const last = [...duo].sort((a, b) => a.time - b.time).at(-1)
-        const mineLast = !!(last && Number(last.mid) === Number(myMid))
+        // 只有「我直接回了他这条」才算已回；我回别人的不算
+        const mineLast = data.rows.some((r) => Number(r.mid) === Number(myMid) && Number(r.target) === Number(cur.source))
         setLocalReplied((m) => (m[curKey] === mineLast ? m : { ...m, [curKey]: mineLast }))
       }, [curKey, thread.data, myMid, cur && cur.mid])
       const rowsRaw = Array.isArray(thread.data?.rows) ? thread.data.rows : []

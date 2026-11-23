@@ -1,6 +1,6 @@
 {
   "name": "dsh-bili-banghui",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "B站帮回：还在为回B站的傻福消息而苦恼吗？把「回复我的」按人和楼层攒成会话，你点头才发。",
   "type": "module",
